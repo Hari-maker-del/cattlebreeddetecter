@@ -4,6 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Camera, Check, ImagePlus, Loader2, RotateCcw, Save, Sparkles, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { classifyImage, type ClassifyResult } from "@/lib/classify.functions";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/dashboard/analyze")({
   head: () => ({ meta: [{ title: "Analyze My Animal — Livestock Copilot" }] }),
@@ -20,6 +21,38 @@ function persistAnimal(animal: SavedAnimal) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify([animal, ...readAnimals()].slice(0, 10)));
 }
 
+async function ensureSignedIn() {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (sessionData.session?.user) return sessionData.session.user;
+
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error) throw new Error(`We couldn't create your farm session: ${error.message}`);
+  if (!data.user) throw new Error("We couldn't create your farm session. Please try again.");
+  return data.user;
+}
+
+async function getOrCreateFarm(userId: string) {
+  const { data: existing, error: lookupError } = await supabase
+    .from("farms")
+    .select("id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (lookupError) throw lookupError;
+  if (existing?.id) return existing.id as string;
+
+  const { data: created, error: createError } = await supabase
+    .from("farms")
+    .insert({ user_id: userId, name: "My Farm", status: "Healthy" })
+    .select("id")
+    .single();
+
+  if (createError) throw createError;
+  return created.id as string;
+}
+
 function AnalyzeAnimalPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -27,6 +60,7 @@ function AnalyzeAnimalPage() {
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [result, setResult] = useState<ClassifyResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [animalId, setAnimalId] = useState<string | null>(null);
   const classifyFn = useServerFn(classifyImage);
@@ -58,11 +92,45 @@ function AnalyzeAnimalPage() {
 
   const reset = () => { setFile(null); setPreview(null); setImageDataUrl(null); setResult(null); setSaved(false); setAnimalId(null); };
 
-  const saveCurrentAnimal = () => {
-    if (!imageDataUrl || !result || result.status !== "success") return;
-    const id = `LV-${Date.now().toString().slice(-6)}`;
-    persistAnimal({ id, animal_type: result.animal_type, breed: result.breed, confidence: result.confidence, imageDataUrl, created_at: new Date().toISOString() });
-    setAnimalId(id); setSaved(true); toast.success(`${id} saved to your farm`);
+  const saveCurrentAnimal = async () => {
+    if (!file || !imageDataUrl || !result || result.status !== "success" || saving || saved) return;
+    setSaving(true);
+    try {
+      const user = await ensureSignedIn();
+      const farmId = await getOrCreateFarm(user.id);
+      const id = `LV-${Date.now().toString().slice(-6)}`;
+      const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
+      const imagePath = `${user.id}/${id}.${extension}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("animal-images")
+        .upload(imagePath, file, { contentType: file.type, upsert: false });
+      if (uploadError) throw uploadError;
+
+      const { error: animalError } = await supabase.from("animals").insert({
+        farm_id: farmId,
+        animal_code: id,
+        animal_type: result.animal_type,
+        breed: result.breed,
+        confidence: result.confidence,
+        image_path: imagePath,
+        analysis_explanation: result.explanation,
+        features: result.features,
+      });
+      if (animalError) {
+        await supabase.storage.from("animal-images").remove([imagePath]);
+        throw animalError;
+      }
+
+      persistAnimal({ id, animal_type: result.animal_type, breed: result.breed, confidence: result.confidence, imageDataUrl, created_at: new Date().toISOString() });
+      setAnimalId(id);
+      setSaved(true);
+      toast.success(`${id} saved to your farm`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "We couldn't save this animal yet.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -85,12 +153,12 @@ function AnalyzeAnimalPage() {
           <div className="rounded-[28px] bg-[#0d211b] p-7 text-white sm:p-9"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#aabbb0]">AI analysis</p>
             {!result && !loading && <div className="flex min-h-[430px] items-center"><div><h2 className="font-serif text-4xl leading-tight">Your result will appear here.</h2><p className="mt-5 max-w-md leading-7 text-[#b8c6be]">We’ll identify the animal type, estimate the breed, show confidence, and explain the visible features behind the prediction.</p><div className="mt-8 space-y-3 text-sm text-[#d8e1dc]"><div className="flex items-center gap-3"><Check className="h-4 w-4 text-[#d89a45]" /> Animal type</div><div className="flex items-center gap-3"><Check className="h-4 w-4 text-[#d89a45]" /> Breed prediction</div><div className="flex items-center gap-3"><Check className="h-4 w-4 text-[#d89a45]" /> Confidence score</div><div className="flex items-center gap-3"><Check className="h-4 w-4 text-[#d89a45]" /> Visible characteristics</div></div></div></div>}
             {loading && <div className="flex min-h-[430px] items-center"><div><Loader2 className="h-10 w-10 animate-spin text-[#d89a45]" /><h2 className="mt-6 font-serif text-4xl">Understanding the image.</h2><p className="mt-4 text-[#b8c6be]">Checking the animal, visual features, and breed characteristics.</p></div></div>}
-            {result?.status === "success" && <div className="pt-8"><div className="rounded-2xl border border-white/10 bg-white/[.05] p-5"><p className="text-sm text-[#aabbb0]">Animal detected</p><h2 className="mt-2 font-serif text-4xl">{result.animal_type}</h2><div className="mt-6 grid grid-cols-2 gap-3"><div><p className="text-xs text-[#8fa097]">Predicted breed</p><p className="mt-1 text-lg font-semibold">{result.breed}</p></div><div><p className="text-xs text-[#8fa097]">Confidence</p><p className="mt-1 text-lg font-semibold">{result.confidence.toFixed(1)}%</p></div></div></div><div className="mt-5"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#aabbb0]">Why this prediction</p><p className="mt-2 leading-7 text-[#d8e1dc]">{result.explanation}</p></div><div className="mt-5 flex flex-wrap gap-2">{result.features.map((feature) => <span key={feature} className="rounded-full border border-white/10 bg-white/[.05] px-3 py-2 text-xs text-[#d8e1dc]">{feature}</span>)}</div>{result.quality.warnings.length > 0 && <div className="mt-5 rounded-2xl border border-[#d89a45]/30 bg-[#d89a45]/10 p-4 text-sm text-[#f0d2a5]">Image quality note: {result.quality.warnings.join(" ")}</div>}<button disabled={saved} onClick={saveCurrentAnimal} className="mt-7 flex w-full items-center justify-center gap-2 rounded-full bg-[#d89a45] px-5 py-4 font-bold text-[#17231e] disabled:cursor-default disabled:opacity-70">{saved ? <><Check className="h-5 w-5" /> Saved to My Farm</> : <><Save className="h-5 w-5" /> Save My Animal</>}</button></div>}
+            {result?.status === "success" && <div className="pt-8"><div className="rounded-2xl border border-white/10 bg-white/[.05] p-5"><p className="text-sm text-[#aabbb0]">Animal detected</p><h2 className="mt-2 font-serif text-4xl">{result.animal_type}</h2><div className="mt-6 grid grid-cols-2 gap-3"><div><p className="text-xs text-[#8fa097]">Predicted breed</p><p className="mt-1 text-lg font-semibold">{result.breed}</p></div><div><p className="text-xs text-[#8fa097]">Confidence</p><p className="mt-1 text-lg font-semibold">{result.confidence.toFixed(1)}%</p></div></div></div><div className="mt-5"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#aabbb0]">Why this prediction</p><p className="mt-2 leading-7 text-[#d8e1dc]">{result.explanation}</p></div><div className="mt-5 flex flex-wrap gap-2">{result.features.map((feature) => <span key={feature} className="rounded-full border border-white/10 bg-white/[.05] px-3 py-2 text-xs text-[#d8e1dc]">{feature}</span>)}</div>{result.quality.warnings.length > 0 && <div className="mt-5 rounded-2xl border border-[#d89a45]/30 bg-[#d89a45]/10 p-4 text-sm text-[#f0d2a5]">Image quality note: {result.quality.warnings.join(" ")}</div>}<button disabled={saved || saving} onClick={saveCurrentAnimal} className="mt-7 flex w-full items-center justify-center gap-2 rounded-full bg-[#d89a45] px-5 py-4 font-bold text-[#17231e] disabled:cursor-default disabled:opacity-70">{saving ? <><Loader2 className="h-5 w-5 animate-spin" /> Saving to My Farm…</> : saved ? <><Check className="h-5 w-5" /> Saved to My Farm</> : <><Save className="h-5 w-5" /> Save My Animal</>}</button></div>}
             {result?.status === "error" && <div className="flex min-h-[430px] items-center"><div><h2 className="font-serif text-4xl">AI is unavailable.</h2><p className="mt-4 text-[#b8c6be]">{result.message}</p><button onClick={reset} className="mt-7 inline-flex items-center gap-2 rounded-full border border-white/20 px-5 py-3 font-semibold"><RotateCcw className="h-4 w-4" /> Try again</button></div></div>}
           </div>
         </div>
 
-        {saved && result?.status === "success" && imageDataUrl && <section className="mt-10 overflow-hidden rounded-[28px] border border-[#dfe3dc] bg-white shadow-[0_18px_60px_rgba(13,33,27,.06)]"><div className="grid lg:grid-cols-[280px_1fr]"><img src={imageDataUrl} alt="Saved animal" className="h-full min-h-[280px] w-full object-cover" /><div className="p-7 sm:p-9"><p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b6b3f]">Digital animal identity</p><div className="mt-2 flex flex-wrap items-end justify-between gap-4"><div><h2 className="font-serif text-4xl">{animalId}</h2><p className="mt-1 text-[#637269]">{result.animal_type} · {result.breed}</p></div><span className="rounded-full bg-[#e9f0e9] px-3 py-2 text-xs font-semibold text-[#31523d]">Saved to My Farm</span></div><div className="mt-7 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl bg-[#f7f4ec] p-4"><p className="text-xs text-[#7a877f]">Breed confidence</p><p className="mt-1 text-xl font-semibold">{result.confidence.toFixed(1)}%</p></div><div className="rounded-2xl bg-[#f7f4ec] p-4"><p className="text-xs text-[#7a877f]">Health records</p><p className="mt-1 text-xl font-semibold">Not started</p></div><div className="rounded-2xl bg-[#f7f4ec] p-4"><p className="text-xs text-[#7a877f]">Milk tracking</p><p className="mt-1 text-xl font-semibold">Not started</p></div></div><p className="mt-6 text-sm leading-6 text-[#637269]">This is the first layer of the animal profile. Next we’ll connect this identity to milk, health, feed, vaccination, breeding, and Copilot history.</p></div></div></section>}
+        {saved && result?.status === "success" && imageDataUrl && <section className="mt-10 overflow-hidden rounded-[28px] border border-[#dfe3dc] bg-white shadow-[0_18px_60px_rgba(13,33,27,.06)]"><div className="grid lg:grid-cols-[280px_1fr]"><img src={imageDataUrl} alt="Saved animal" className="h-full min-h-[280px] w-full object-cover" /><div className="p-7 sm:p-9"><p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8b6b3f]">Digital animal identity</p><div className="mt-2 flex flex-wrap items-end justify-between gap-4"><div><h2 className="font-serif text-4xl">{animalId}</h2><p className="mt-1 text-[#637269]">{result.animal_type} · {result.breed}</p></div><span className="rounded-full bg-[#e9f0e9] px-3 py-2 text-xs font-semibold text-[#31523d]">Saved to My Farm</span></div><div className="mt-7 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl bg-[#f7f4ec] p-4"><p className="text-xs text-[#7a877f]">Breed confidence</p><p className="mt-1 text-xl font-semibold">{result.confidence.toFixed(1)}%</p></div><div className="rounded-2xl bg-[#f7f4ec] p-4"><p className="text-xs text-[#7a877f]">Health records</p><p className="mt-1 text-xl font-semibold">Not started</p></div><div className="rounded-2xl bg-[#f7f4ec] p-4"><p className="text-xs text-[#7a877f]">Milk tracking</p><p className="mt-1 text-xl font-semibold">Not started</p></div></div><p className="mt-6 text-sm leading-6 text-[#637269]">This animal is now stored in Supabase and linked to your farm. Next we can connect health, milk, feed, vaccination, breeding, and Copilot history.</p></div></div></section>}
       </section>
     </main>
   );
