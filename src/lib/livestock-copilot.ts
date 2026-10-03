@@ -1,163 +1,119 @@
-import { supabase } from "@/lib/supabase";
+import { supabase } from "@/integrations/supabase/client";
 
-export type CopilotResult = {
-  title: string;
-  text: string;
-  data?: Array<{ label: string; value: string; detail?: string }>;
-};
+export type CopilotRow = { label: string; value: string; detail?: string };
+export type CopilotResult = { title: string; text: string; data?: CopilotRow[] };
 
-async function ensureSession() {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session) {
-    const { error } = await supabase.auth.signInAnonymously();
-    if (error) throw error;
-  }
-  const session = await supabase.auth.getSession();
-  if (!session.data.session?.user.id) throw new Error("Unable to start your farm session.");
-  return session.data.session.user.id;
+type Animal = { id: string; animal_code: string; animal_type: string; breed: string | null; confidence: number | null };
+type Milk = { animal_id: string; recorded_at: string; quantity_liters: number; session: string };
+type Health = { animal_id: string; recorded_at: string; status: string; title: string; notes: string | null };
+type Feed = { animal_id: string; recorded_at: string; feed_type: string; quantity_kg: number; notes: string | null };
+type Breeding = { animal_id: string; event_date: string; event_type: string; status: string; notes: string | null };
+
+type Intent = "count" | "milk" | "health" | "feed" | "breeding" | "animal" | "unknown";
+
+const normalize = (input: string) => input
+  .toLowerCase()
+  .normalize("NFKC")
+  .replace(/[?!.,;:]+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const hasAny = (text: string, words: string[]) => words.some((word) => text.includes(word));
+
+function detectIntent(input: string): Intent {
+  const q = normalize(input);
+  if (hasAny(q, ["how many", "evlo", "ethana", "எத்தனை", "எவ்வளவு மாடு", "மாடுகள் எத்தனை"])) return "count";
+  if (hasAny(q, ["milk", "paal", "pal", "paalu", "பால்", "பால", "yield", "production"])) return "milk";
+  if (hasAny(q, ["health", "sick", "attention", "problem", "issue", "noy", "noi", "udal", "aarokiyam", "கவனம்", "நோய்", "உடல்நிலை"])) return "health";
+  if (hasAny(q, ["feed", "food", "fodder", "theeni", "theevanam", "theevanam", "தீனி", "தீவனம்", "சாப்பாடு"])) return "feed";
+  if (hasAny(q, ["breed", "breeding", "pregnant", "pregnancy", "insemination", "mating", "karu", "கன்று", "இனப்பெருக்கம்", "சினை"])) return "breeding";
+  if (hasAny(q, ["animal", "cow", "cattle", "buffalo", "maadu", "maadu", "மாடு", "மாடுகள்", "animal id", "tn-"])) return "animal";
+  return "unknown";
 }
 
-async function getFarmId(userId: string) {
-  const { data, error } = await supabase.from("farms").select("id,name").eq("owner_id", userId).limit(1).maybeSingle();
-  if (error) throw error;
-  return data?.id ?? null;
+function wantsLow(input: string) {
+  return hasAny(normalize(input), ["less", "low", "lowest", "kammi", "kammia", "kurai", "குறை", "கம்மி", "குறைவாக", "குறைந்த"]);
 }
 
-/**
- * Lightweight multilingual intent layer for English, Tamil and common Tanglish.
- * It normalizes common farmer phrases before routing to the real Supabase data.
- * This is deliberately deterministic: it never invents farm facts.
- */
-function normalizeIntent(input: string) {
-  const q = input.toLowerCase().trim();
-  const compact = q.replace(/[?!.,;:]/g, " ").replace(/\s+/g, " ");
-
-  const milk = [
-    "milk", "milking", "pāl", "paal", "பால்", "paaloda", "paaloda", "paal kudukk", "paal kodukk",
-    "paal kammi", "paal korai", "paal kurai", "paal adhigam", "paal athigam", "litre", "liter", "litres", "liters",
-  ];
-  const health = [
-    "health", "sick", "attention", "concern", "healthy", "doctor", "vet", "problem", "issue", "நலம்", "உடல்நலம்",
-    "udal nalam", "udambu", "udambu sari illa", "sari illa", "sugam illa", "maruthuvam", "doctor venum", "vet venum",
-    "கவனம்", "நோய்", "உடம்பு", "பிரச்சனை",
-  ];
-  const feed = [
-    "feed", "fodder", "food", "கலவை", "தீனி", "தீவனம்", "kalavai", "theeni", "theevanam", "saapadu", "sapadu",
-    "enna theeni", "theeni enna", "feed record", "feed records",
-  ];
-  const breeding = [
-    "breeding", "breed", "pregnan", "mating", "insemin", "கருவுற", "இனப்பெருக்க", "karuvura", "karuvuruthal",
-    "mating record", "breeding record", "breeding records", "pregnancy", "pregnant",
-  ];
-  const animals = [
-    "animal", "animals", "cow", "cattle", "buffalo", "goat", "sheep", "மாடு", "மாடுகள்", "கால்நடை", "kaalnadai",
-    "maadu", "maadugal", "pasu", "erumai", "aadu", "aadu", "my animals", "my animal", "en maadu", "en maadugal",
-  ];
-
-  const has = (terms: string[]) => terms.some((term) => compact.includes(term));
-  const wantsMilk = has(milk);
-  const wantsHealth = has(health);
-  const wantsFeed = has(feed);
-  const wantsBreeding = has(breeding);
-  const wantsAnimals = has(animals);
-
-  // More specific intent wins when a phrase contains multiple concepts.
-  if (wantsMilk) return "milk" as const;
-  if (wantsHealth) return "health" as const;
-  if (wantsFeed) return "feed" as const;
-  if (wantsBreeding) return "breeding" as const;
-  if (wantsAnimals || /show|list|எந்த|எத்தனை|என்னிடம்|என்கிட்ட|irukku|irukka|ullathu|ulladhu|irukanga|irukkanga/.test(compact)) return "animals" as const;
-  return "general" as const;
+function wantsRecent(input: string) {
+  return hasAny(normalize(input), ["today", "recent", "recently", "this week", "today", "innaiku", "indru", "இன்று", "சமீபத்தில்", "இந்த வாரம்"]);
 }
 
-function formatLanguageAware(kind: string, languageHint: string | undefined, count: number) {
-  const isTamil = languageHint && /[\u0B80-\u0BFF]/.test(languageHint);
-  const isTanglish = languageHint && /\b(unga|ungal|en|enna|evlo|irukku|irukka|maadu|maadugal|paal|theeni|udambu|sari|venum|kaamikka|sollu|sollunga)\b/i.test(languageHint);
-  if (isTamil) {
-    if (kind === "animals") return `உங்கள் பண்ணையில் ${count} கால்நடைகள் சேமிக்கப்பட்டுள்ளன.`;
-    if (kind === "milk") return "உங்கள் பால் பதிவுகளை வைத்து இந்த தகவலைக் கண்டுபிடித்தேன்.";
-    if (kind === "health") return "சேமிக்கப்பட்ட உடல்நல பதிவுகளில் கவனம் தேவைப்படும் பதிவுகளைப் பார்த்தேன்.";
+function fmt(n: number) { return Number(n || 0).toFixed(1).replace(/\.0$/, ""); }
+
+async function loadContext() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Please sign in to use your farm Copilot.");
+  const { data: farms, error: farmError } = await supabase.from("farms").select("id").eq("user_id", user.id).limit(1);
+  if (farmError) throw farmError;
+  const farmId = farms?.[0]?.id;
+  if (!farmId) return { animals: [] as Animal[], milk: [] as Milk[], health: [] as Health[], feed: [] as Feed[], breeding: [] as Breeding[] };
+
+  const [{ data: animals, error: a }, { data: milk, error: m }, { data: health, error: h }, { data: feed, error: f }, { data: breeding, error: b }] = await Promise.all([
+    supabase.from("animals").select("id,animal_code,animal_type,breed,confidence").eq("farm_id", farmId),
+    supabase.from("milk_records").select("animal_id,recorded_at,quantity_liters,session").in("animal_id", [] as string[]),
+    supabase.from("health_records").select("animal_id,recorded_at,status,title,notes").in("animal_id", [] as string[]),
+    supabase.from("feed_records").select("animal_id,recorded_at,feed_type,quantity_kg,notes").in("animal_id", [] as string[]),
+    supabase.from("breeding_records").select("animal_id,event_date,event_type,status,notes").in("animal_id", [] as string[]),
+  ]);
+  if (a) throw a;
+  const ids = (animals ?? []).map((x) => x.id);
+  if (ids.length) {
+    const [milkRes, healthRes, feedRes, breedingRes] = await Promise.all([
+      supabase.from("milk_records").select("animal_id,recorded_at,quantity_liters,session").in("animal_id", ids),
+      supabase.from("health_records").select("animal_id,recorded_at,status,title,notes").in("animal_id", ids),
+      supabase.from("feed_records").select("animal_id,recorded_at,feed_type,quantity_kg,notes").in("animal_id", ids),
+      supabase.from("breeding_records").select("animal_id,event_date,event_type,status,notes").in("animal_id", ids),
+    ]);
+    if (milkRes.error) throw milkRes.error;
+    if (healthRes.error) throw healthRes.error;
+    if (feedRes.error) throw feedRes.error;
+    if (breedingRes.error) throw breedingRes.error;
+    return { animals: animals ?? [], milk: milkRes.data ?? [], health: healthRes.data ?? [], feed: feedRes.data ?? [], breeding: breedingRes.data ?? [] };
   }
-  if (isTanglish) {
-    if (kind === "animals") return `Unga farm-la ${count} animals save pannirukku.`;
-    if (kind === "milk") return "Unga milk records-a base panni indha information-a kandupidichen.";
-    if (kind === "health") return "Save pannirukkura health records-la attention thevai padra records-a paathen.";
-  }
-  return "";
+  if (m || h || f || b) throw m || h || f || b;
+  return { animals: animals ?? [], milk: [], health: [], feed: [], breeding: [] };
 }
 
 export async function askLivestockCopilot(question: string): Promise<CopilotResult> {
-  const userId = await ensureSession();
-  const farmId = await getFarmId(userId);
-  if (!farmId) return { title: "Your farm is ready for data", text: "Save your first animal, then I can answer questions from its real farm records." };
+  const context = await loadContext();
+  const intent = detectIntent(question);
+  const recent = wantsRecent(question);
+  const low = wantsLow(question);
+  const animalMap = new Map(context.animals.map((a) => [a.id, a]));
 
-  const { data: animals, error: animalError } = await supabase
-    .from("animals")
-    .select("id,animal_code,animal_type,breed,confidence")
-    .eq("farm_id", farmId)
-    .order("created_at", { ascending: false });
-  if (animalError) throw animalError;
-
-  const intent = normalizeIntent(question);
-  const tamilIntro = formatLanguageAware(intent, question, animals.length);
+  if (intent === "count") {
+    const counts = context.animals.reduce<Record<string, number>>((acc, a) => { acc[a.animal_type] = (acc[a.animal_type] || 0) + 1; return acc; }, {});
+    return { title: "Your animals", text: `You currently have ${context.animals.length} saved animals.`, data: Object.entries(counts).map(([label, value]) => ({ label, value: String(value) })) };
+  }
 
   if (intent === "milk") {
-    const { data, error } = await supabase
-      .from("milk_records")
-      .select("animal_id,recorded_at,session,quantity_liters")
-      .in("animal_id", animals.map((a) => a.id))
-      .order("recorded_at", { ascending: false });
-    if (error) throw error;
-    const byAnimal = new Map<string, number>();
-    for (const row of data ?? []) byAnimal.set(row.animal_id, (byAnimal.get(row.animal_id) ?? 0) + Number(row.quantity_liters));
-    const ranked = animals.map((a) => ({ animal: a, litres: byAnimal.get(a.id) ?? 0 })).sort((a, b) => a.litres - b.litres);
-    const target = ranked[0];
-    if (!target || target.litres === 0) return { title: "Milk records", text: tamilIntro || "I don't have milk records for these animals yet. Record today's milk on an animal profile and I can compare production." };
-    return {
-      title: tamilIntro ? "பால் உற்பத்தி" : "Milk production",
-      text: tamilIntro ? `${target.animal.animal_code} குறைந்த அளவு பால் பதிவு கொண்டுள்ளது: ${target.litres.toFixed(1)} L. இது பதிவுகளின் அடிப்படையிலான தகவல்.` : `${target.animal.animal_code} has the lowest recorded milk total in the available records: ${target.litres.toFixed(1)} L. This is a record-based observation, not a diagnosis.`,
-      data: ranked.slice(0, 5).map((x) => ({ label: x.animal.animal_code, value: `${x.litres.toFixed(1)} L`, detail: x.animal.breed ?? x.animal.animal_type })),
-    };
+    const records = recent ? context.milk.filter((r) => Date.now() - new Date(r.recorded_at).getTime() <= 7 * 86400000) : context.milk;
+    const totals = new Map<string, number>();
+    for (const r of records) totals.set(r.animal_id, (totals.get(r.animal_id) || 0) + Number(r.quantity_liters));
+    const rows = [...totals.entries()].sort((a, b) => low ? a[1] - b[1] : b[1] - a[1]).slice(0, 8).map(([id, value]) => ({ label: animalMap.get(id)?.animal_code || "Animal", value: `${fmt(value)} L`, detail: animalMap.get(id)?.breed || animalMap.get(id)?.animal_type }));
+    return { title: low ? "Lower milk records" : "Milk production", text: records.length ? `I found ${records.length} milk records${recent ? " from the last 7 days" : ""}.` : "I don't have milk records for that period yet.", data: rows };
   }
 
   if (intent === "health") {
-    const { data, error } = await supabase
-      .from("health_records")
-      .select("animal_id,recorded_at,status,title,notes")
-      .in("animal_id", animals.map((a) => a.id))
-      .order("recorded_at", { ascending: false });
-    if (error) throw error;
-    const attention = (data ?? []).filter((r) => ["needs attention", "attention", "follow-up", "observation"].includes(String(r.status).toLowerCase()));
-    const latest = new Map<string, (typeof attention)[number]>();
-    for (const row of attention) if (!latest.has(row.animal_id)) latest.set(row.animal_id, row);
-    if (!latest.size) return { title: "Health overview", text: tamilIntro || "I don't see health records marked for attention in the available data." };
-    const rows = [...latest.entries()].map(([animalId, record]) => {
-      const animal = animals.find((a) => a.id === animalId);
-      return { label: animal?.animal_code ?? "Animal", value: record.status, detail: record.title };
-    });
-    return { title: tamilIntro ? "கவனம் தேவைப்படும் கால்நடைகள்" : "Animals needing attention", text: tamilIntro ? `${rows.length} கால்நடைகளுக்கு பதிவுகளில் கவனம் அல்லது follow-up உள்ளது. பதிவை சரிபார்த்து, தேவையானால் கால்நடை மருத்துவரை அணுகவும்.` : `${rows.length} animal${rows.length === 1 ? " may" : "s may"} have a recorded health observation or follow-up. Consider reviewing the record and contacting a veterinarian when appropriate.`, data: rows };
+    const rows = context.health.filter((r) => !recent || Date.now() - new Date(r.recorded_at).getTime() <= 7 * 86400000).sort((a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime()).slice(0, 8).map((r) => ({ label: animalMap.get(r.animal_id)?.animal_code || "Animal", value: r.status, detail: `${r.title}${r.notes ? ` · ${r.notes}` : ""}` }));
+    return { title: "Health observations", text: rows.length ? `I found ${rows.length} recent health observations.` : "I don't have health observations yet.", data: rows };
   }
 
   if (intent === "feed") {
-    const { data, error } = await supabase.from("feed_records").select("animal_id,recorded_at,feed_type,quantity_kg,notes").in("animal_id", animals.map((a) => a.id)).order("recorded_at", { ascending: false }).limit(8);
-    if (error) throw error;
-    if (!data?.length) return { title: "Feed records", text: tamilIntro || "No feed records are available yet. Add a feed entry from the Feed section and I can summarize it here." };
-    return { title: tamilIntro ? "சமீபத்திய தீவன பதிவுகள்" : "Recent feed records", text: tamilIntro ? `${data.length} சமீபத்திய தீவன பதிவுகள் கிடைத்தன.` : `I found ${data.length} recent feed records across your animals.`, data: data.slice(0, 6).map((r) => ({ label: animals.find((a) => a.id === r.animal_id)?.animal_code ?? "Animal", value: `${r.quantity_kg} kg ${r.feed_type}`, detail: new Date(r.recorded_at).toLocaleDateString() })) };
+    const rows = context.feed.sort((a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime()).slice(0, 8).map((r) => ({ label: animalMap.get(r.animal_id)?.animal_code || "Animal", value: `${fmt(Number(r.quantity_kg))} kg`, detail: `${r.feed_type}${r.notes ? ` · ${r.notes}` : ""}` }));
+    return { title: "Recent feed records", text: rows.length ? `I found ${rows.length} recent feed records.` : "I don't have feed records yet.", data: rows };
   }
 
   if (intent === "breeding") {
-    const { data, error } = await supabase.from("breeding_records").select("animal_id,event_date,event_type,status,notes").in("animal_id", animals.map((a) => a.id)).order("event_date", { ascending: false }).limit(8);
-    if (error) throw error;
-    if (!data?.length) return { title: "Breeding records", text: tamilIntro || "No breeding records are available yet. Add a breeding event to an animal and I can summarize its history." };
-    return { title: tamilIntro ? "சமீபத்திய இனப்பெருக்க பதிவுகள்" : "Recent breeding records", text: tamilIntro ? `${data.length} சமீபத்திய இனப்பெருக்க பதிவுகள் கிடைத்தன.` : `I found ${data.length} recent breeding records.`, data: data.slice(0, 6).map((r) => ({ label: animals.find((a) => a.id === r.animal_id)?.animal_code ?? "Animal", value: `${r.event_type} · ${r.status}`, detail: new Date(r.event_date).toLocaleDateString() })) };
+    const rows = context.breeding.sort((a, b) => new Date(b.event_date).getTime() - new Date(a.event_date).getTime()).slice(0, 8).map((r) => ({ label: animalMap.get(r.animal_id)?.animal_code || "Animal", value: r.status, detail: `${r.event_type}${r.notes ? ` · ${r.notes}` : ""}` }));
+    return { title: "Breeding records", text: rows.length ? `I found ${rows.length} breeding records.` : "I don't have breeding records yet.", data: rows };
   }
 
-  if (intent === "animals") {
-    return { title: tamilIntro ? "உங்கள் கால்நடைகள்" : "Your animals", text: tamilIntro || `You currently have ${animals.length} saved animal${animals.length === 1 ? "" : "s"} in this farm.`, data: animals.slice(0, 10).map((a) => ({ label: a.animal_code, value: a.breed ?? a.animal_type, detail: a.confidence ? `${Number(a.confidence).toFixed(1)}% confidence` : undefined })) };
+  if (intent === "animal") {
+    const rows = context.animals.slice(0, 10).map((a) => ({ label: a.animal_code, value: a.breed || a.animal_type, detail: a.confidence ? `${fmt(Number(a.confidence))}% AI confidence` : undefined }));
+    return { title: "Your saved animals", text: context.animals.length ? `You have ${context.animals.length} saved animals.` : "No animals are saved yet. Analyze an animal to add your first one.", data: rows };
   }
 
-  return {
-    title: "Livestock Copilot",
-    text: "Ask me in English, தமிழ், or Tanglish about milk, health, feed, breeding, or your animals. I will use your saved farm records rather than inventing an answer.",
-  };
+  return { title: "I can help with your farm", text: "Ask me about animals, milk production, health observations, feed records, or breeding history. You can speak in English, Tamil, or Tanglish." };
 }
