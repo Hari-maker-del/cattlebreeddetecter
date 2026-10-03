@@ -4,112 +4,22 @@ import { Loader2, Mic, MicOff, Send, Sparkles, Volume2 } from "lucide-react";
 import { DashboardShell } from "@/components/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { askLivestockCopilot, type CopilotResult } from "@/lib/livestock-copilot";
+import { askLivestockCopilot, type CopilotLanguage, type CopilotResult } from "@/lib/livestock-copilot";
 
-export const Route = createFileRoute("/dashboard/copilot")({
-  head: () => ({ meta: [{ title: "Livestock Copilot" }] }),
-  component: LivestockCopilot,
-});
+export const Route = createFileRoute("/dashboard/copilot")({ head: () => ({ meta: [{ title: "Livestock Copilot" }] }), component: LivestockCopilot });
 
 const suggestions = ["Which animals produced less milk?", "Show animals needing attention", "What feed did I record recently?", "Show my breeding records", "How many animals do I have?"];
-const languages = [
-  { key: "en-IN", label: "English", speech: "en-IN" },
-  { key: "hi-IN", label: "हिन्दी", speech: "hi-IN" },
-  { key: "ta-IN", label: "தமிழ்", speech: "ta-IN" },
-  { key: "ta-Tanglish", label: "Tanglish", speech: "ta-IN" },
-  { key: "te-IN", label: "తెలుగు", speech: "te-IN" },
-  { key: "kn-IN", label: "ಕನ್ನಡ", speech: "kn-IN" },
-  { key: "ml-IN", label: "മലയാളം", speech: "ml-IN" },
-  { key: "mr-IN", label: "मराठी", speech: "mr-IN" },
-  { key: "bn-IN", label: "বাংলা", speech: "bn-IN" },
-  { key: "gu-IN", label: "ગુજરાતી", speech: "gu-IN" },
-  { key: "pa-IN", label: "ਪੰਜਾਬੀ", speech: "pa-IN" },
-  { key: "or-IN", label: "ଓଡ଼ିଆ", speech: "or-IN" },
-  { key: "as-IN", label: "অসমীয়া", speech: "as-IN" },
-  { key: "ur-IN", label: "اردو", speech: "ur-IN" },
-] as const;
-type LanguageKey = (typeof languages)[number]["key"];
+const languages: { key: CopilotLanguage; label: string; speech: string }[] = [
+  { key: "en-IN", label: "English", speech: "en-IN" }, { key: "hi-IN", label: "हिन्दी", speech: "hi-IN" }, { key: "ta-IN", label: "தமிழ்", speech: "ta-IN" }, { key: "ta-Tanglish", label: "Tanglish", speech: "ta-IN" }, { key: "te-IN", label: "తెలుగు", speech: "te-IN" }, { key: "kn-IN", label: "ಕನ್ನಡ", speech: "kn-IN" }, { key: "ml-IN", label: "മലയാളം", speech: "ml-IN" }, { key: "mr-IN", label: "मराठी", speech: "mr-IN" }, { key: "bn-IN", label: "বাংলা", speech: "bn-IN" }, { key: "gu-IN", label: "ગુજરાતી", speech: "gu-IN" }, { key: "pa-IN", label: "ਪੰਜਾਬੀ", speech: "pa-IN" }, { key: "or-IN", label: "ଓଡ଼ିଆ", speech: "or-IN" }, { key: "as-IN", label: "অসমীয়া", speech: "as-IN" }, { key: "ur-IN", label: "اردو", speech: "ur-IN" },
+];
 
 function LivestockCopilot() {
-  const [question, setQuestion] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<CopilotResult | null>(null);
-  const [error, setError] = useState("");
-  const [language, setLanguage] = useState<LanguageKey>("en-IN");
-  const [listening, setListening] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
-  const recognitionRef = useRef<any>(null);
+  const [question, setQuestion] = useState(""); const [loading, setLoading] = useState(false); const [result, setResult] = useState<CopilotResult | null>(null); const [error, setError] = useState(""); const [language, setLanguage] = useState<CopilotLanguage>("en-IN"); const [listening, setListening] = useState(false); const [speaking, setSpeaking] = useState(false); const recognitionRef = useRef<any>(null);
   const selectedLanguage = languages.find((item) => item.key === language) ?? languages[0];
-
   useEffect(() => () => recognitionRef.current?.stop(), []);
-
-  const ask = async (value = question) => {
-    const text = value.trim();
-    if (!text || loading) return;
-    setLoading(true); setError(""); setQuestion(text);
-    try {
-      const response = await askLivestockCopilot(text);
-      setResult(response);
-      speak(response.text);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "I couldn't read your farm data right now.");
-    } finally { setLoading(false); }
-  };
-
-  const startVoice = () => {
-    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) { setError("Voice input is not supported by this browser. Try Chrome or Edge."); return; }
-    if (listening) { recognitionRef.current?.stop(); return; }
-    const recognition = new SpeechRecognition();
-    recognition.lang = selectedLanguage.speech;
-    recognition.continuous = false; recognition.interimResults = true;
-    recognition.onstart = () => { setListening(true); setError(""); };
-    recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results).map((r: any) => r[0]?.transcript ?? "").join("");
-      setQuestion(transcript);
-      if (event.results[event.results.length - 1]?.isFinal) void ask(transcript);
-    };
-    recognition.onerror = () => { setListening(false); setError("I couldn't hear that clearly. Please try again."); };
-    recognition.onend = () => setListening(false);
-    recognitionRef.current = recognition; recognition.start();
-  };
-
-  const speak = (text: string) => {
-    if (!("speechSynthesis" in window) || !text) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = selectedLanguage.speech; utterance.rate = 0.95;
-    utterance.onstart = () => setSpeaking(true); utterance.onend = () => setSpeaking(false); utterance.onerror = () => setSpeaking(false);
-    window.speechSynthesis.speak(utterance);
-  };
-
-  const placeholder = language === "ta-IN" ? "உங்கள் கால்நடை பற்றி கேளுங்கள்..." : language === "ta-Tanglish" ? "Unga maadu pathi kelunga..." : language === "hi-IN" ? "अपने पशुओं के बारे में पूछें..." : language === "te-IN" ? "మీ పశువుల గురించి అడగండి..." : language === "kn-IN" ? "ನಿಮ್ಮ ಜಾನುವಾರುಗಳ ಬಗ್ಗೆ ಕೇಳಿ..." : language === "ml-IN" ? "നിങ്ങളുടെ കന്നുകാലികളെക്കുറിച്ച് ചോദിക്കൂ..." : "Ask about milk, health, feed, breeding, or animals...";
-
-  return (
-    <DashboardShell title="Livestock Copilot">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <section className="rounded-3xl bg-gradient-to-br from-emerald-950 via-emerald-900 to-slate-950 p-7 text-white shadow-elegant sm:p-10">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/15"><Sparkles className="h-6 w-6" /></div>
-            <div className="flex max-w-full flex-wrap gap-1 rounded-2xl bg-white/10 p-1 ring-1 ring-white/10">
-              {languages.map((item) => <button key={item.key} onClick={() => setLanguage(item.key)} className={`rounded-xl px-2.5 py-1.5 text-xs transition ${language === item.key ? "bg-white text-emerald-950" : "text-white/75 hover:bg-white/10"}`}>{item.label}</button>)}
-            </div>
-          </div>
-          <h2 className="mt-6 font-display text-3xl font-bold sm:text-4xl">Ask your farm anything.</h2>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75 sm:text-base">Speak naturally in your regional language or type. Copilot answers from your saved animals, milk, health, feed, and breeding records.</p>
-          <div className="mt-7 flex flex-wrap gap-2">{suggestions.map((item) => <button key={item} onClick={() => void ask(item)} className="rounded-full border border-white/15 bg-white/10 px-3 py-2 text-xs text-white/85 transition hover:bg-white/15">{item}</button>)}</div>
-        </section>
-        <section className="rounded-3xl border border-border bg-card p-5 shadow-soft sm:p-7">
-          <div className="flex gap-3"><div className="relative flex-1"><Input value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void ask(); }} placeholder={placeholder} className="h-12 rounded-2xl pr-12" aria-label="Ask Livestock Copilot" /><button type="button" onClick={startVoice} className={`absolute right-3 top-1/2 -translate-y-1/2 ${listening ? "text-destructive" : "text-muted-foreground"}`} aria-label={listening ? "Stop voice input" : "Start voice input"}>{listening ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}</button></div><Button onClick={() => void ask()} disabled={!question.trim() || loading} className="h-12 rounded-2xl px-5">{loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}<span className="sr-only">Ask</span></Button></div>
-          {listening && <div className="mt-4 flex items-center gap-3 rounded-2xl bg-primary/5 px-4 py-3 text-sm text-primary"><span className="flex h-2.5 w-2.5 animate-pulse rounded-full bg-primary" />Listening in {selectedLanguage.label}...</div>}
-          {speaking && <button onClick={() => window.speechSynthesis.cancel()} className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Volume2 className="h-4 w-4" /> Speaking · tap to stop</button>}
-          {error && <div className="mt-5 rounded-2xl border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">{error}</div>}
-          {!result && !loading && !error && <div className="py-16 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary/10 text-primary"><Sparkles className="h-6 w-6" /></div><h3 className="mt-4 font-display text-lg font-semibold">Your farm context is ready.</h3><p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">Tap the microphone and speak naturally, or type a question. Answers use records saved for your animals.</p></div>}
-          {loading && <div className="flex items-center gap-3 py-16 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />Reading your farm records...</div>}
-          {result && !loading && <div className="mt-6 rounded-3xl bg-muted/40 p-5 sm:p-6"><div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-primary"><Sparkles className="h-4 w-4" /> Copilot insight</div><h3 className="mt-3 font-display text-xl font-bold">{result.title}</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">{result.text}</p>{result.data && result.data.length > 0 && <div className="mt-5 divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">{result.data.map((row, index) => <div key={`${row.label}-${index}`} className="flex items-center justify-between gap-4 px-4 py-3"><div><div className="text-sm font-semibold">{row.label}</div>{row.detail && <div className="text-xs text-muted-foreground">{row.detail}</div>}</div><div className="text-sm font-semibold text-primary">{row.value}</div></div>)}</div>}<button onClick={() => speak(result.text)} className="mt-4 inline-flex items-center gap-2 rounded-full border border-border px-3 py-2 text-xs font-medium"><Volume2 className="h-4 w-4" /> Hear answer</button></div>}
-        </section>
-        <p className="text-center text-xs text-muted-foreground">For health concerns, Copilot surfaces recorded observations and does not replace veterinary examination.</p>
-      </div>
-    </DashboardShell>
-  );
+  const ask = async (value = question) => { const text = value.trim(); if (!text || loading) return; setLoading(true); setError(""); setQuestion(text); try { const response = await askLivestockCopilot(text, language); setResult(response); speak(response.text); } catch (e) { setError(e instanceof Error ? e.message : "I couldn't read your farm data right now."); } finally { setLoading(false); } };
+  const startVoice = () => { const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition; if (!SpeechRecognition) { setError("Voice input is not supported by this browser. Try Chrome or Edge."); return; } if (listening) { recognitionRef.current?.stop(); return; } const recognition = new SpeechRecognition(); recognition.lang = selectedLanguage.speech; recognition.continuous = false; recognition.interimResults = true; recognition.onstart = () => { setListening(true); setError(""); }; recognition.onresult = (event: any) => { const transcript = Array.from(event.results).map((r: any) => r[0]?.transcript ?? "").join(""); setQuestion(transcript); if (event.results[event.results.length - 1]?.isFinal) void ask(transcript); }; recognition.onerror = () => { setListening(false); setError("I couldn't hear that clearly. Please try again."); }; recognition.onend = () => setListening(false); recognitionRef.current = recognition; recognition.start(); };
+  const speak = (text: string) => { if (!("speechSynthesis" in window) || !text) return; window.speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.lang = selectedLanguage.speech; utterance.rate = 0.95; utterance.onstart = () => setSpeaking(true); utterance.onend = () => setSpeaking(false); utterance.onerror = () => setSpeaking(false); window.speechSynthesis.speak(utterance); };
+  const placeholder = language === "ta-IN" ? "உங்கள் கால்நடை பற்றி கேளுங்கள்..." : language === "ta-Tanglish" ? "Unga maadu pathi kelunga..." : language === "hi-IN" ? "अपने पशुओं के बारे में पूछें..." : language === "te-IN" ? "మీ పశువుల గురించి అడగండి..." : language === "kn-IN" ? "ನಿಮ್ಮ ಜಾನುವಾರುಗಳ ಬಗ್ಗೆ ಕೇಳಿ..." : language === "ml-IN" ? "നിങ്ങളുടെ കന്നുകാലികളെക്കുറിച്ച് ചോദിക്കൂ..." : language === "mr-IN" ? "तुमच्या जनावरांबद्दल विचारा..." : language === "bn-IN" ? "আপনার পশুদের সম্পর্কে জিজ্ঞাসা করুন..." : language === "gu-IN" ? "તમારા પશુઓ વિશે પૂછો..." : language === "pa-IN" ? "ਆਪਣੇ ਪਸ਼ੂਆਂ ਬਾਰੇ ਪੁੱਛੋ..." : "Ask about milk, health, feed, breeding, or animals...";
+  return <DashboardShell title="Livestock Copilot"><div className="mx-auto max-w-4xl space-y-6"><section className="rounded-3xl bg-gradient-to-br from-emerald-950 via-emerald-900 to-slate-950 p-7 text-white shadow-elegant sm:p-10"><div className="flex flex-wrap items-center justify-between gap-4"><div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/15"><Sparkles className="h-6 w-6" /></div><div className="flex max-w-full flex-wrap gap-1 rounded-2xl bg-white/10 p-1 ring-1 ring-white/10">{languages.map((item) => <button key={item.key} onClick={() => setLanguage(item.key)} className={`rounded-xl px-2.5 py-1.5 text-xs transition ${language === item.key ? "bg-white text-emerald-950" : "text-white/75 hover:bg-white/10"}`}>{item.label}</button>)}</div></div><h2 className="mt-6 font-display text-3xl font-bold sm:text-4xl">Ask your farm anything.</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-white/75 sm:text-base">Speak naturally in your regional language or type. Copilot answers from your saved animals, milk, health, feed, and breeding records.</p><div className="mt-7 flex flex-wrap gap-2">{suggestions.map((item) => <button key={item} onClick={() => void ask(item)} className="rounded-full border border-white/15 bg-white/10 px-3 py-2 text-xs text-white/85 transition hover:bg-white/15">{item}</button>)}</div></section><section className="rounded-3xl border border-border bg-card p-5 shadow-soft sm:p-7"><div className="flex gap-3"><div className="relative flex-1"><Input value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void ask(); }} placeholder={placeholder} className="h-12 rounded-2xl pr-12" aria-label="Ask Livestock Copilot" /><button type="button" onClick={startVoice} className={`absolute right-3 top-1/2 -translate-y-1/2 ${listening ? "text-destructive" : "text-muted-foreground"}`} aria-label={listening ? "Stop voice input" : "Start voice input"}>{listening ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}</button></div><Button onClick={() => void ask()} disabled={!question.trim() || loading} className="h-12 rounded-2xl px-5">{loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}<span className="sr-only">Ask</span></Button></div>{listening && <div className="mt-4 flex items-center gap-3 rounded-2xl bg-primary/5 px-4 py-3 text-sm text-primary"><span className="flex h-2.5 w-2.5 animate-pulse rounded-full bg-primary" />Listening in {selectedLanguage.label}...</div>}{speaking && <button onClick={() => window.speechSynthesis.cancel()} className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Volume2 className="h-4 w-4" /> Speaking · tap to stop</button>}{error && <div className="mt-5 rounded-2xl border border-destructive/20 bg-destructive/5 p-4 text-sm text-destructive">{error}</div>}{!result && !loading && !error && <div className="py-16 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary/10 text-primary"><Sparkles className="h-6 w-6" /></div><h3 className="mt-4 font-display text-lg font-semibold">Your farm context is ready.</h3><p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">Tap the microphone and speak naturally, or type a question. Answers use records saved for your animals.</p></div>}{loading && <div className="flex items-center gap-3 py-16 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />Reading your farm records...</div>}{result && !loading && <div className="mt-6 rounded-3xl bg-muted/40 p-5 sm:p-6"><div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-primary"><Sparkles className="h-4 w-4" /> Copilot insight</div><h3 className="mt-3 font-display text-xl font-bold">{result.title}</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">{result.text}</p>{result.data && result.data.length > 0 && <div className="mt-5 divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">{result.data.map((row, index) => <div key={`${row.label}-${index}`} className="flex items-center justify-between gap-4 px-4 py-3"><div><div className="text-sm font-semibold">{row.label}</div>{row.detail && <div className="text-xs text-muted-foreground">{row.detail}</div>}</div><div className="text-sm font-semibold text-primary">{row.value}</div></div>)}</div>}<button onClick={() => speak(result.text)} className="mt-4 inline-flex items-center gap-2 rounded-full border border-border px-3 py-2 text-xs font-medium"><Volume2 className="h-4 w-4" /> Hear answer</button></div>}</section><p className="text-center text-xs text-muted-foreground">For health concerns, Copilot surfaces recorded observations and does not replace veterinary examination.</p></div></DashboardShell>;
 }
