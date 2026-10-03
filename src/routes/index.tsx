@@ -1,6 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import Landing from "@/components/Landing";
+import { useEffect } from "react";
 
 export const Route = createFileRoute("/")({
-  component: Landing,
+  component: LivestockCopilotLanding,
 });
+
+function LivestockCopilotLanding() {
+  useEffect(() => {
+    window.location.replace("/livestock-copilot.html");
+  }, []);
+
+  return null;
+}
