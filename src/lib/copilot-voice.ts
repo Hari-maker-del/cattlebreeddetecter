@@ -8,7 +8,8 @@ export type VoiceSynthesisResult = {
   voiceName?: string;
 };
 
-const REMOTE_VOICE_URL = (import.meta.env.VITE_COPILOT_VOICE_URL as string | undefined)?.trim();
+const configuredVoiceUrl = (import.meta.env.VITE_COPILOT_VOICE_URL as string | undefined)?.trim();
+const REMOTE_VOICE_URL = configuredVoiceUrl || "/api/copilot-voice";
 
 function browserVoice(locale: string, fallbackLocale?: string): SpeechSynthesisVoice | undefined {
   if (!("speechSynthesis" in window)) return undefined;
@@ -45,7 +46,7 @@ export async function speakCopilot(text: string, language: CopilotVoiceLanguage,
 
   const remoteAudio = await remoteSynthesis(text, language);
   if (remoteAudio && typeof Audio !== "undefined") {
-    const blob = new Blob([remoteAudio], { type: "audio/mpeg" });
+    const blob = new Blob([remoteAudio]);
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     await new Promise<void>((resolve) => {
@@ -72,5 +73,5 @@ export function stopCopilotVoice() {
 }
 
 export function getCopilotVoiceMode() {
-  return REMOTE_VOICE_URL ? "ai-provider-with-browser-fallback" : "free-browser-fallback";
+  return configuredVoiceUrl ? "custom-ai-provider-with-browser-fallback" : "secure-server-ai-provider-with-browser-fallback";
 }
